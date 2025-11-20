@@ -1,0 +1,43 @@
+# docker-compose.yml
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vaultify
+      POSTGRES_USER: vaultify
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  pgadmin:
+    image: dpage/pgadmin4:7
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: pgadmin@local
+      PGADMIN_DEFAULT_PASSWORD: pgadmin
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://vaultify:changeme@db:5432/vaultify
+      JWT_SECRET: replace_this_with_a_strong_secret
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
+

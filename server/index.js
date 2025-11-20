@@ -58,6 +58,26 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// Add near login/register routes in server/index.js
+const { Buffer } = require('buffer');
+
+app.get('/api/auth_salt', async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) return res.status(400).json({ error: 'missing email' });
+    const r = await pool.query('SELECT auth_salt, kdf_params FROM users WHERE email=$1', [email]);
+    if (r.rowCount === 0) return res.status(404).json({ error: 'not found' });
+
+    // auth_salt is stored as BYTEA, convert to base64 for client
+    const row = r.rows[0];
+    const saltB64 = Buffer.from(row.auth_salt).toString('base64');
+    res.json({ auth_salt: saltB64, kdf_params: row.kdf_params || {} });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // Get vault for a user (requires a real auth middleware; simple param for scaffold)
 app.get('/api/vault/:userId', async (req, res) => {
   try {
