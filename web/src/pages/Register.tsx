@@ -96,10 +96,13 @@ export default function Register({ onRegistered }: { onRegistered?: () => void }
 
 /* reuse styles from Login for consistent look */
 const centerCard: React.CSSProperties = {
-  minHeight: '70vh',
+  minHeight: '100vh',
+  width: '100%',
   display: 'flex',
   alignItems: 'center',
-  justifyContent: 'center'
+  justifyContent: 'center',
+  padding: 20,
+  background: 'var(--vaultify-bg)'
 };
 
 const cardInner: React.CSSProperties = {
