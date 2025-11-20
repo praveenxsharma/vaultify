@@ -11,15 +11,23 @@ function App() {
 
   if (!userId) {
     return (
-      <div style={{ padding: 20 }}>
-        <Register />
-        <hr />
-        <Login onSuccess={(uid: string, m: string, kp: any) => { setUserId(uid); setMaster(m); setKdfParams(kp); }} />
+      <div style={{ padding: 20, display: 'flex', justifyContent: 'center' }}>
+        <div style={{ width: 720 }}>
+          <Register />
+          <hr />
+          <Login
+            onSuccess={(uid: string, m: string, kp: any) => {
+              setUserId(uid);
+              setMaster(m);
+              setKdfParams(kp);
+            }}
+          />
+        </div>
       </div>
     );
   }
 
-  return <Vault userId={userId} master={master} kdfParams={kdfParams} />;
+  return <Vault userId={userId} master={master} kdfParams={kdfParams} onLogout={() => { setUserId(null); setMaster(''); setKdfParams(null); }} />;
 }
 
 export default App;
