@@ -5,12 +5,26 @@ const bodyParser = require('body-parser');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 const { Pool } = require('pg');
+const { Buffer } = require('buffer');
 
 const PORT = process.env.PORT || 3000;
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const connectionString = process.env.DATABASE_URL || '';
+const isProd = process.env.NODE_ENV === 'production';
+
+// Use SSL in production for managed DBs (Render / Heroku / Supabase, etc.)
+// rejectUnauthorized:false allows TLS without providing CA in the container.
+// For stricter security, provide the CA and set rejectUnauthorized: true.
+const pool = new Pool({
+  connectionString,
+  ssl: isProd ? { rejectUnauthorized: false } : false,
+});
 
 const app = express();
-app.use(cors({ origin: true, credentials: true }));
+
+// CORS: allow specific origin in production via ALLOWED_ORIGIN, otherwise allow all (dev)
+const allowedOrigin = process.env.ALLOWED_ORIGIN || true;
+app.use(cors({ origin: allowedOrigin, credentials: true }));
+
 app.use(bodyParser.json());
 
 // Basic health
@@ -20,20 +34,29 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.post('/api/register', async (req, res) => {
   try {
     const { email, auth_verifier, auth_salt, kdf_params } = req.body;
-    if (!email || !auth_verifier || !auth_salt) return res.status(400).json({ error: 'missing fields' });
+    if (!email || !auth_verifier || !auth_salt) {
+      return res.status(400).json({ error: 'missing fields' });
+    }
 
     // Hash the verifier server-side for extra hardening
     const hashed = await bcrypt.hash(auth_verifier, 12);
 
-    await pool.query(
-      `INSERT INTO users (email, auth_verifier, auth_salt, kdf_params)
-       VALUES ($1,$2,$3,$4)`,
-      [email, hashed, Buffer.from(auth_salt, 'base64'), kdf_params || {}]
-    );
+    const insertQuery = `
+      INSERT INTO users (email, auth_verifier, auth_salt, kdf_params)
+      VALUES ($1, $2, $3, $4::jsonb)
+    `;
+    const values = [
+      email,
+      hashed,
+      Buffer.from(auth_salt, 'base64'),
+      JSON.stringify(kdf_params || {})
+    ];
+
+    await pool.query(insertQuery, values);
     res.json({ ok: true });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'server error' });
+    console.error('POST /api/register error:', err);
+    res.status(500).json({ error: 'server error', details: err.message });
   }
 });
 
@@ -53,28 +76,31 @@ app.post('/api/login', async (req, res) => {
     // For now, return a simple success. Replace with JWT/session later.
     res.json({ ok: true, userId: user.id });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'server error' });
+    console.error('POST /api/login error:', err);
+    res.status(500).json({ error: 'server error', details: err.message });
   }
 });
 
-// Add near login/register routes in server/index.js
-const { Buffer } = require('buffer');
-
+// Robust auth_salt endpoint
 app.get('/api/auth_salt', async (req, res) => {
   try {
     const email = req.query.email;
     if (!email) return res.status(400).json({ error: 'missing email' });
-    const r = await pool.query('SELECT auth_salt, kdf_params FROM users WHERE email=$1', [email]);
-    if (r.rowCount === 0) return res.status(404).json({ error: 'not found' });
 
-    // auth_salt is stored as BYTEA, convert to base64 for client
+    const r = await pool.query('SELECT auth_salt, kdf_params FROM users WHERE email=$1', [email]);
+    if (r.rowCount === 0) return res.status(404).json({ error: 'user not found' });
+
     const row = r.rows[0];
+
+    if (!row.auth_salt) {
+      return res.status(404).json({ error: 'auth_salt not found for user' });
+    }
+
     const saltB64 = Buffer.from(row.auth_salt).toString('base64');
-    res.json({ auth_salt: saltB64, kdf_params: row.kdf_params || {} });
+    return res.json({ auth_salt: saltB64, kdf_params: row.kdf_params || {} });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'server error' });
+    console.error('GET /api/auth_salt error:', err);
+    return res.status(500).json({ error: 'server error', details: err.message });
   }
 });
 
@@ -86,8 +112,8 @@ app.get('/api/vault/:userId', async (req, res) => {
     if (r.rowCount === 0) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'server error' });
+    console.error('GET /api/vault/:userId error:', err);
+    res.status(500).json({ error: 'server error', details: err.message });
   }
 });
 
@@ -96,14 +122,28 @@ app.post('/api/vault/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const { vault_blob, vault_iv, kdf_params } = req.body;
-    await pool.query(
-      `UPDATE users SET vault_blob=$1, vault_iv=$2, kdf_params=$3, updated_at=now() WHERE id=$4`,
-      [vault_blob, vault_iv, kdf_params || {}, userId]
-    );
-    res.json({ ok: true });
+
+    if (!userId) return res.status(400).json({ error: 'missing userId param' });
+    if (!vault_blob || !vault_iv) return res.status(400).json({ error: 'missing vault_blob or vault_iv' });
+
+    const q = `
+      UPDATE users
+      SET vault_blob = $1,
+          vault_iv = $2,
+          kdf_params = $3::jsonb,
+          updated_at = now()
+      WHERE id = $4
+      RETURNING id;
+    `;
+    const values = [vault_blob, vault_iv, JSON.stringify(kdf_params || {}), userId];
+
+    const result = await pool.query(q, values);
+    if (result.rowCount === 0) return res.status(404).json({ error: 'user not found' });
+
+    return res.json({ ok: true });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'server error' });
+    console.error('POST /api/vault/:userId error:', err);
+    res.status(500).json({ error: 'server error', details: err.message });
   }
 });
 
